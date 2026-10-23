@@ -1,0 +1,8 @@
+{
+  "appId": "ru.velo1.tracker",
+  "appName": "ВЕЛО1 Трекер",
+  "webDir": "www",
+  "android": {
+    "useLegacyBridge": true
+  }
+}

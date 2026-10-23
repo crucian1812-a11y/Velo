@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ВЕЛО1 Трекер</string>
+    <string name="title_activity_main">ВЕЛО1 Трекер</string>
+    <string name="package_name">ru.velo1.tracker</string>
+    <string name="custom_url_scheme">ru.velo1.tracker</string>
+</resources>

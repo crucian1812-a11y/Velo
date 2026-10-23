@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon.svg">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="css/vendor/leaflet.css">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -127,7 +127,7 @@
         <label class="row">Ваш вес, кг <input type="number" id="setWeight" min="30" max="200" step="1"></label>
         <label class="row">Порог точности GPS, м <input type="number" id="setAcc" min="10" max="100" step="5"></label>
       </div>
-      <p class="muted small">Трек маршрута: © участники <a href="https://www.openstreetmap.org/relation/13232073" target="_blank" rel="noopener">OpenStreetMap</a> (трасса «Вело1»). Держите экран включённым: браузеры останавливают GPS при выключенном экране.</p>
+      <p class="muted small">Трек маршрута: © участники <a href="https://www.openstreetmap.org/relation/13232073" target="_blank" rel="noopener">OpenStreetMap</a> (трасса «Вело1»). <span id="screenNote">Держите экран включённым: браузеры останавливают GPS при выключенном экране. Для записи с погашенным экраном установите Android-приложение (ссылка в README на GitHub).</span></p>
     </section>
   </main>
 
@@ -169,7 +169,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="js/vendor/leaflet.js"></script>
   <script src="js/route.js"></script>
   <script src="js/pois.js"></script>
   <script src="js/app.js"></script>

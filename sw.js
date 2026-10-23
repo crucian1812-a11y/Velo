@@ -1,10 +1,9 @@
 // Офлайн-кэш: оболочка приложения + просмотренные тайлы карты.
-var VERSION = 'velo1-v1';
+var VERSION = 'velo1-v2';
 var SHELL = [
   './', 'index.html', 'css/style.css', 'js/app.js', 'js/route.js', 'js/pois.js',
   'manifest.webmanifest', 'icon.svg',
-  'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
-  'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'
+  'css/vendor/leaflet.css', 'js/vendor/leaflet.js'
 ];
 var TILES = 'velo1-tiles';
 var MAX_TILES = 4000;

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Уведомление фоновой записи (плагин background-geolocation) -->
+    <string name="capacitor_background_geolocation_notification_channel_name">Запись поездки</string>
+    <string name="capacitor_background_geolocation_notification_icon">drawable/ic_tracking</string>
+    <string name="capacitor_background_geolocation_notification_color">#0F766E</string>
+</resources>

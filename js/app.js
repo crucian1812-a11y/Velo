@@ -14,6 +14,14 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
+  // Android-приложение (Capacitor): фоновый GPS и системная озвучка работают при погашенном экране
+  var Cap = window.Capacitor;
+  var NATIVE = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
+  var BgGeo = NATIVE ? Cap.registerPlugin('BackgroundGeolocation') : null;
+  var Tts = NATIVE ? Cap.registerPlugin('TextToSpeech') : null;
+  var AppPlugin = NATIVE ? Cap.registerPlugin('App') : null;
+  var Notif = NATIVE ? Cap.registerPlugin('LocalNotifications') : null;
+
   // ---------- Геометрия ----------
   var R = 6371000;
   function rad(d) { return d * Math.PI / 180; }
@@ -134,7 +142,9 @@
   var speed = 0;             // сглаженная текущая скорость, м/с
   var pos = null;            // проекция на маршрут
   var lastMoveAt = 0;
+  var prevFixT = 0;          // время предыдущей точки (для времени в движении)
   var watchId = null;
+  var bgWatcherId = null, bgMode = null, gpsDenied = false;
   var gpsGranted = false;
 
   // ---------- Карта ----------
@@ -210,6 +220,7 @@
 
   // ---------- GPS ----------
   function startGps() {
+    if (NATIVE) { startNativeGps(isRideActive()); return; }
     if (!('geolocation' in navigator)) {
       gateMessage('В этом браузере нет геолокации. Откройте страницу в Chrome или Safari.', true);
       return;
@@ -225,6 +236,44 @@
     });
   }
 
+  function isRideActive() { return ride.status === 'riding' || ride.status === 'paused'; }
+
+  // В приложении GPS идёт через фоновую службу: пока идёт поездка, Android показывает
+  // уведомление и продолжает присылать координаты при погашенном экране.
+  function startNativeGps(background) {
+    if (gpsDenied) { gpsDenied = false; BgGeo.openSettings().catch(function () {}); return; }
+    if (bgMode === background && bgWatcherId != null) return;
+    if (!gpsGranted) $('gateText').textContent = 'Ищем спутники… Выйдите на открытое место.';
+    var old = bgWatcherId;
+    bgWatcherId = null;
+    bgMode = background;
+    if (old != null) BgGeo.removeWatcher({ id: old }).catch(function () {});
+    var opts = { requestPermissions: true, stale: false, distanceFilter: 0 };
+    if (background) {
+      opts.backgroundTitle = 'ВЕЛО1: идёт запись поездки';
+      opts.backgroundMessage = 'GPS и подсказки работают при выключенном экране';
+      if (Notif) Notif.requestPermissions().catch(function () {});
+    }
+    BgGeo.addWatcher(opts, function (loc, err) {
+      if (err) {
+        if (err.code === 'NOT_AUTHORIZED') {
+          gpsDenied = true;
+          if (bgWatcherId != null) BgGeo.removeWatcher({ id: bgWatcherId }).catch(function () {});
+          bgWatcherId = null;
+          onGpsError({ code: 1 });
+        }
+        else onGpsError({ code: 2 });
+        return;
+      }
+      if (!loc) return;
+      onPos({
+        coords: { latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy, altitude: loc.altitude, speed: loc.speed },
+        timestamp: loc.time || Date.now()
+      });
+    }).then(function (id) { bgWatcherId = id; }).catch(function () { onGpsError({ code: 2 }); });
+  }
+  function syncGpsMode() { if (NATIVE && gpsGranted) startNativeGps(isRideActive()); }
+
   function gateMessage(text, isError) {
     $('gpsGate').classList.remove('hidden');
     $('gateText').textContent = text;
@@ -235,6 +284,12 @@
     if (err.code === 1) {
       gpsGranted = false;
       gateMessage('Доступ к геолокации запрещён. Без GPS трекер не работает.', true);
+      if (NATIVE) {
+        $('gateBtn').textContent = 'Открыть настройки';
+        $('gateHelp').innerHTML = 'Настройки → Разрешения → Местоположение → «Разрешить только во время использования приложения». ' +
+          'И проверьте, что геолокация телефона включена.';
+        return;
+      }
       $('gateHelp').innerHTML = 'Android/Chrome: значок 🔒 слева от адреса → Разрешения → Геоданные → Разрешить.<br>' +
         'iPhone: Настройки → Конфиденциальность → Службы геолокации → Safari → «При использовании».<br>' +
         'И проверьте, что геолокация телефона включена.';
@@ -278,7 +333,13 @@
 
     pos = project(f.lat, f.lon);
 
-    if (ride.status === 'riding') record(f);
+    var gap = prevFixT ? f.t - prevFixT : 0;
+    prevFixT = f.t;
+    if (ride.status === 'riding') {
+      if (gap > 0 && gap <= 15000 && speed >= MOVING_SPEED) ride.movingMs += gap;
+      record(f, gap);
+      checkAutoPause(Date.now());
+    }
     else if (ride.status === 'paused' && ride.autoPaused && speed >= MOVING_SPEED * 1.5 && f.acc <= settings.acc) {
       resume(true);
     }
@@ -296,7 +357,7 @@
     chip.textContent = 'GPS ±' + Math.round(acc) + ' м';
   }
 
-  function record(f) {
+  function record(f, gap) {
     if (f.acc > settings.acc) return;               // слишком неточно — не пишем
     var seg = ride.track[ride.track.length - 1];
     if (!lastRec) {
@@ -312,6 +373,9 @@
     if (d < Math.max(4, f.acc * 0.5) && dt < 30) return; // дрожание на месте
 
     ride.dist += d;
+    // Долгий перерыв между точками (например, браузер «уснул» с погашенным экраном):
+    // если за это время проехали расстояние — засчитываем время как движение
+    if (gap > 15000 && d / (gap / 1000) >= MOVING_SPEED) ride.movingMs += gap;
     if (speed > ride.maxSpeed && f.acc <= 20) ride.maxSpeed = speed;
     lastRec = f;
     seg.push([f.lat, f.lon, f.t, f.alt]);
@@ -341,21 +405,19 @@
   }
 
   // ---------- Таймер ----------
-  var lastTick = Date.now();
   setInterval(function () {
     var now = Date.now();
-    var dt = now - lastTick;
-    lastTick = now;
-    if (ride.status === 'riding') {
-      var fresh = fix && (now - fix.t) < 10000;
-      if (fresh && speed >= MOVING_SPEED && dt < 5000) ride.movingMs += dt;
-      if (settings.autoPause && fresh && lastMoveAt && now - lastMoveAt > AUTO_PAUSE_S * 1000 && ride.movingMs > 0) {
-        pause(true);
-      }
-    }
+    if (ride.status === 'riding') checkAutoPause(now);
     checkGpsLost(now);
     render();
   }, 1000);
+
+  function checkAutoPause(now) {
+    var fresh = fix && (now - fix.t) < 10000;
+    if (settings.autoPause && fresh && lastMoveAt && now - lastMoveAt > AUTO_PAUSE_S * 1000 && ride.movingMs > 0) {
+      pause(true);
+    }
+  }
 
   var lostShown = false;
   function checkGpsLost(now) {
@@ -364,7 +426,8 @@
     if (lost && !lostShown) {
       lostShown = true;
       setGpsChip(null);
-      showBanner('Нет сигнала GPS. Держите экран включённым и проверьте геолокацию.', true);
+      showBanner(NATIVE ? 'Нет сигнала GPS. Проверьте, что геолокация включена.' :
+        'Нет сигнала GPS. Держите экран включённым и проверьте геолокацию.', true);
       if (ride.status === 'riding') say('Пропал сигнал GPS');
     } else if (!lost && lostShown) {
       lostShown = false;
@@ -381,10 +444,11 @@
     ride.seen = keep; ride.quiz = quiz;   // уже прочитанные рассказы не повторяем
     ride.status = 'riding';
     ride.startedAt = Date.now();
-    lastRec = null; lastMoveAt = Date.now();
+    lastRec = null; lastMoveAt = Date.now(); prevFixT = 0;
     redrawTrack();
-    record(fix);
+    record(fix, 0);
     requestWakeLock();
+    syncGpsMode();
     say('Поехали! Хорошей дороги.');
     persist(true);
     render();
@@ -405,7 +469,7 @@
     ride.status = 'riding';
     ride.autoPaused = false;
     ride.track.push([]);      // новый сегмент — без прямой линии через паузу
-    lastRec = null; lastMoveAt = Date.now();
+    lastRec = null; lastMoveAt = Date.now(); prevFixT = 0;
     toast(auto ? 'Движение — продолжаем запись' : 'Продолжаем');
     requestWakeLock();
     persist(true);
@@ -417,6 +481,7 @@
     ride.status = 'finished';
     ride.finishedAt = Date.now();
     releaseWakeLock();
+    syncGpsMode();
     say('Поездка завершена. Дистанция ' + fmtKm(ride.dist, 1).replace('.', ',') + ' километра.');
     persist(true);
     render();
@@ -428,6 +493,7 @@
     ride = newRide();
     lastRec = null;
     persist(true);
+    syncGpsMode();
     redrawTrack();
     renderGuide();
     render();
@@ -584,8 +650,19 @@
     pickVoice();
     speechSynthesis.onvoiceschanged = pickVoice;
   }
+  // В приложении — системный синтезатор речи Android (работает и с погашенным экраном),
+  // в браузере — Web Speech API (голос из настроек телефона)
+  var nativeSpeaking = 0;
   function say(text, interrupt) {
-    if (!settings.voice || !('speechSynthesis' in window)) return;
+    if (!settings.voice) return;
+    if (Tts) {
+      nativeSpeaking++;
+      Tts.speak({ text: text, lang: 'ru-RU', rate: 1.0, queueStrategy: interrupt ? 0 : 1 })
+        .catch(function () {})
+        .then(function () { nativeSpeaking = Math.max(0, nativeSpeaking - 1); });
+      return;
+    }
+    if (!('speechSynthesis' in window)) return;
     if (interrupt) speechSynthesis.cancel();
     var u = new SpeechSynthesisUtterance(text);
     u.lang = 'ru-RU';
@@ -596,12 +673,19 @@
   function speakPoi(p) {
     say(p.title + '. ' + p.story.join(' ') + (p.quiz && ride.quiz[p.id] == null ? ' Вопрос викторины: ' + p.quiz.q : ''), true);
   }
-  function stopSpeech() { if ('speechSynthesis' in window) speechSynthesis.cancel(); }
+  function stopSpeech() {
+    if (Tts) { nativeSpeaking = 0; Tts.stop().catch(function () {}); return; }
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+  }
+  function isSpeaking() {
+    if (Tts) return nativeSpeaking > 0;
+    return 'speechSynthesis' in window && speechSynthesis.speaking;
+  }
 
   // ---------- Блокировка сна экрана ----------
   var wakeLock = null;
   function requestWakeLock() {
-    if (!('wakeLock' in navigator)) return;
+    if (NATIVE || !('wakeLock' in navigator)) return; // в приложении экран можно гасить
     navigator.wakeLock.request('screen').then(function (wl) {
       wakeLock = wl;
       wl.addEventListener('release', function () { wakeLock = null; });
@@ -818,7 +902,7 @@
     $('btnStop').addEventListener('click', finish);
     $('btnNew').addEventListener('click', function () {
       if (!confirm('Начать новую поездку? Текущая будет удалена — сначала сохраните GPX.')) return;
-      ride = newRide(); lastRec = null; persist(true); redrawTrack(); renderGuide(); render(); showTab('ride');
+      ride = newRide(); lastRec = null; persist(true); syncGpsMode(); redrawTrack(); renderGuide(); render(); showTab('ride');
     });
     $('btnReset').addEventListener('click', resetRide);
     $('btnGpx').addEventListener('click', exportGpx);
@@ -828,7 +912,7 @@
     $('pmClose').addEventListener('click', closePoi);
     $('pmSpeak').addEventListener('click', function () {
       if (!currentPoi) return;
-      if ('speechSynthesis' in window && speechSynthesis.speaking) { stopSpeech(); return; }
+      if (isSpeaking()) { stopSpeech(); return; }
       var was = settings.voice; settings.voice = true; speakPoi(currentPoi); settings.voice = was;
     });
     $('pmMap').addEventListener('click', function () {
@@ -843,9 +927,25 @@
     });
   }
 
+  // «Назад» на Android: закрываем окно рассказа, иначе сворачиваем приложение (не закрываем —
+  // иначе запись поездки прервётся)
+  if (AppPlugin) {
+    AppPlugin.addListener('backButton', function () {
+      if (!$('poiModal').classList.contains('hidden')) { closePoi(); return; }
+      if (!isTabActive('ride')) { showTab('ride'); return; }
+      AppPlugin.minimizeApp().catch(function () {});
+    });
+    // Вернулись из настроек с выданным разрешением — подключаем GPS снова
+    AppPlugin.addListener('resume', function () {
+      if (!gpsGranted && gpsDenied) { gpsDenied = false; startNativeGps(isRideActive()); }
+    });
+  }
+
   // ---------- Запуск ----------
   bind();
   bindSettings();
+  if (NATIVE) $('screenNote').textContent = 'Приложение пишет трек и озвучивает подсказки при заблокированном экране. ' +
+    'Если запись обрывается — отключите для «ВЕЛО1 Трекер» оптимизацию батареи в настройках телефона.';
   renderProgressDots();
   renderGuide();
   render();
@@ -858,14 +958,16 @@
   }
 
   // Если разрешение уже выдано — подключаемся сразу, иначе ждём нажатия кнопки
-  if (navigator.permissions && navigator.permissions.query) {
+  if (NATIVE) {
+    $('gateHelp').textContent = 'Во время поездки телефон можно блокировать: запись и подсказки продолжатся.';
+  } else if (navigator.permissions && navigator.permissions.query) {
     navigator.permissions.query({ name: 'geolocation' }).then(function (r) {
       if (r.state === 'granted') startGps();
       else if (r.state === 'denied') onGpsError({ code: 1 });
     }).catch(function () {});
   }
 
-  if ('serviceWorker' in navigator && window.isSecureContext) {
+  if (!NATIVE && 'serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.register('sw.js').catch(function () {});
   }
 })();
