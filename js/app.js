@@ -15,12 +15,32 @@
   var $ = function (id) { return document.getElementById(id); };
 
   // Android-приложение (Capacitor): фоновый GPS и системная озвучка работают при погашенном экране
+  // Мост Capacitor сам кладёт плагины в window.Capacitor.Plugins (registerPlugin есть
+  // только в JS-библиотеке @capacitor/core, которую мы не подключаем).
   var Cap = window.Capacitor;
-  var NATIVE = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
-  var BgGeo = NATIVE ? Cap.registerPlugin('BackgroundGeolocation') : null;
-  var Tts = NATIVE ? Cap.registerPlugin('TextToSpeech') : null;
-  var AppPlugin = NATIVE ? Cap.registerPlugin('App') : null;
-  var Notif = NATIVE ? Cap.registerPlugin('LocalNotifications') : null;
+  var NATIVE = !!(Cap && typeof Cap.isNativePlatform === 'function' && Cap.isNativePlatform());
+  function nativePlugin(name) {
+    if (!NATIVE) return null;
+    if (Cap.Plugins && Cap.Plugins[name]) return Cap.Plugins[name];
+    if (typeof Cap.registerPlugin === 'function') return Cap.registerPlugin(name);
+    return null;
+  }
+  var BgGeo = nativePlugin('BackgroundGeolocation');
+  var Tts = nativePlugin('TextToSpeech');
+  var AppPlugin = nativePlugin('App');
+  var Notif = nativePlugin('LocalNotifications');
+  // Методы плагинов возвращают то промис, то сразу значение — приводим к промису
+  function call(fn) {
+    try { return Promise.resolve(fn()); } catch (e) { return Promise.reject(e); }
+  }
+
+  // Любая ошибка скрипта — на экран, чтобы было видно, что сломалось
+  window.addEventListener('error', function (e) {
+    var b = document.getElementById('banner');
+    if (!b) return;
+    b.textContent = 'Ошибка приложения: ' + (e.message || e) + (e.lineno ? ' (строка ' + e.lineno + ')' : '');
+    b.className = 'banner err';
+  });
 
   // ---------- Геометрия ----------
   var R = 6371000;
@@ -230,17 +250,17 @@
   function startGps() {
     gpsAskedAt = Date.now();
     gpsProblem = null;
-    if (!gpsGranted) showGate('Ищем спутники… Выйдите на открытое место.', 'Включить GPS');
-    if (NATIVE) startNativeGps(isRideActive(), true);
+    if (!gpsGranted) showGpsCard('Ищем спутники…', '', null);
+    if (BgGeo) startNativeGps(isRideActive(), true);
     else startWebGps();
   }
 
   function startWebGps() {
-    if (!('geolocation' in navigator)) { if (!NATIVE) reportGps('unsupported'); return; }
-    if (!window.isSecureContext) { if (!NATIVE) reportGps('insecure'); return; }
+    if (!('geolocation' in navigator)) { if (!BgGeo) reportGps('unsupported'); return; }
+    if (!window.isSecureContext) { if (!BgGeo) reportGps('insecure'); return; }
     if (watchId != null) navigator.geolocation.clearWatch(watchId);
     watchId = navigator.geolocation.watchPosition(onPos, function (err) {
-      if (NATIVE && err.code !== 1) return;   // в приложении о выключенном GPS сообщает фоновая служба
+      if (BgGeo && err.code !== 1) return;    // в приложении о выключенном GPS сообщает фоновая служба
       reportGps(err.code === 1 ? 'denied' : err.code === 2 ? 'off' : 'nosignal');
     }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
   }
@@ -251,9 +271,7 @@
   // поездка, Android показывает уведомление и присылает координаты при погашенном экране.
   function startNativeGps(background, force) {
     if (!force && bgMode === background && bgWatcherId != null) return;
-    var req;
-    try { req = BgGeo.requestPermissions(); } catch (e) { req = null; }
-    Promise.resolve(req).catch(function () { return null; }).then(function (st) {
+    call(function () { return BgGeo.requestPermissions(); }).catch(function () { return null; }).then(function (st) {
       if (st && st.location && st.location !== 'granted') { reportGps('denied'); return; }
       if (st && watchId == null) startWebGps();   // запасной источник, если служба не отвечает
       addNativeWatcher(background, !st);           // не смогли спросить заранее — пусть спросит служба
@@ -264,19 +282,25 @@
     var old = bgWatcherId;
     bgWatcherId = null;
     bgMode = background;
-    if (old != null) BgGeo.removeWatcher({ id: old }).catch(noop);
+    if (old != null) call(function () { return BgGeo.removeWatcher({ id: old }); }).catch(noop);
     var opts = { requestPermissions: !!askPerm, stale: false, distanceFilter: 0 };
     if (background) {
       opts.backgroundTitle = 'ВЕЛО1: идёт запись поездки';
       opts.backgroundMessage = 'GPS и подсказки работают при выключенном экране';
-      if (Notif) Notif.requestPermissions().catch(noop);
+      if (Notif) call(function () { return Notif.requestPermissions(); }).catch(noop);
     }
     var myId = null, dead = false;
-    BgGeo.addWatcher(opts, function (loc, err) {
+    call(function () { return BgGeo.addWatcher(opts, onNativeLocation); }).then(function (id) {
+      myId = id;
+      if (dead || bgMode !== background) call(function () { return BgGeo.removeWatcher({ id: id }); }).catch(noop);
+      else bgWatcherId = id;
+    }).catch(function () { reportGps('nosignal'); });
+
+    function onNativeLocation(loc, err) {
       if (err) {
         // Ошибочный наблюдатель больше не нужен — снимаем его, чтобы повтор запустил новый
         dead = true;
-        if (myId != null) BgGeo.removeWatcher({ id: myId }).catch(noop);
+        if (myId != null) call(function () { return BgGeo.removeWatcher({ id: myId }); }).catch(noop);
         if (bgWatcherId === myId) bgWatcherId = null;
         var msg = String((err && err.message) || err);
         if (/disabled/i.test(msg)) reportGps('off');
@@ -289,30 +313,27 @@
         coords: { latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy, altitude: loc.altitude, speed: loc.speed },
         timestamp: loc.time || Date.now()
       });
-    }).then(function (id) {
-      myId = id;
-      if (dead || bgMode !== background) BgGeo.removeWatcher({ id: id }).catch(noop);
-      else bgWatcherId = id;
-    }).catch(function () { reportGps('nosignal'); });
+    }
   }
-  function syncGpsMode() { if (NATIVE && gpsGranted) startNativeGps(isRideActive(), false); }
+  function syncGpsMode() { if (BgGeo && gpsGranted) startNativeGps(isRideActive(), false); }
 
-  function showGate(text, btn, help) {
-    $('gpsGate').classList.remove('hidden');
-    $('gateText').textContent = text;
-    $('gateBtn').textContent = btn;
-    if (help != null) $('gateHelp').innerHTML = help;
+  // Карточка состояния GPS на экране трекера (не блокирует приложение)
+  function showGpsCard(text, help, btn, isErr) {
+    $('gpsCard').classList.remove('hidden');
+    $('gpsCard').classList.toggle('err', !!isErr);
+    $('gpsCardText').textContent = text;
+    $('gpsCardHelp').innerHTML = help || '';
+    $('gpsCardBtn').classList.toggle('hidden', !btn);
+    if (btn) $('gpsCardBtn').textContent = btn;
   }
 
-  function gateButton() {
-    if (gpsProblem === 'denied' && NATIVE) {
+  function gpsCardButton() {
+    if (gpsProblem === 'denied' && BgGeo) {
       // Сначала спрашиваем ещё раз; если Android больше не показывает запрос — открываем настройки
-      var req;
-      try { req = BgGeo.requestPermissions(); } catch (e) { req = Promise.reject(e); }
-      req.then(function (st) {
+      call(function () { return BgGeo.requestPermissions(); }).then(function (st) {
         if (st && st.location === 'granted') startGps();
-        else BgGeo.openSettings().catch(noop);
-      }).catch(function () { BgGeo.openSettings().catch(noop); });
+        else call(function () { return BgGeo.openSettings(); }).catch(noop);
+      }).catch(function () { call(function () { return BgGeo.openSettings(); }).catch(noop); });
       return;
     }
     startGps();
@@ -323,21 +344,21 @@
     gpsProblem = kind;
     if (gpsGranted) { setGpsChip(null); return; }    // во время работы — только индикатор
     var t = {
-      denied: NATIVE ? 'Нет разрешения на точное местоположение.' : 'Доступ к геолокации для этого сайта запрещён.',
+      denied: BgGeo ? 'Нет разрешения на точное местоположение.' : 'Доступ к геолокации для этого сайта запрещён.',
       off: 'Геолокация на телефоне выключена.',
       nosignal: 'Сигнал GPS пока не найден. Выйдите на открытое место — поиск продолжается.',
       unsupported: 'В этом браузере нет геолокации. Откройте страницу в Chrome или Safari.',
       insecure: 'GPS работает только по защищённой ссылке (https://). Откройте приложение по ссылке из GitHub.'
     }[kind];
     var help = {
-      denied: NATIVE ?
+      denied: BgGeo ?
         'Нажмите «Открыть настройки» → Разрешения → Местоположение → «Разрешить только во время использования» и включите «Точное местоположение». Затем вернитесь в приложение.' :
         'Android/Chrome: значок 🔒 слева от адреса → Разрешения → Геоданные → Разрешить, затем «Попробовать снова».<br>' +
         'iPhone: Настройки → Конфиденциальность → Службы геолокации → Safari → «При использовании».',
-      off: 'Опустите шторку и включите «Местоположение» (GPS). Приложение подхватит сигнал само, нажимать ничего не нужно.',
+      off: 'Опустите шторку и включите «Местоположение» (GPS). Сигнал подхватится сам, нажимать ничего не нужно.',
       nosignal: 'В помещении спутники часто не видны. Проверьте, что «Местоположение» включено.'
     }[kind] || '';
-    showGate(t, kind === 'denied' && NATIVE ? 'Открыть настройки' : 'Попробовать снова', help);
+    showGpsCard(t, help, kind === 'denied' && BgGeo ? 'Открыть настройки' : 'Попробовать снова', kind !== 'nosignal');
     scheduleGpsRetry();
   }
 
@@ -354,8 +375,12 @@
   function updateGateWait(now) {
     if (gpsGranted || !gpsAskedAt || gpsProblem) return;
     var sec = Math.round((now - gpsAskedAt) / 1000);
-    $('gateText').textContent = 'Ищем спутники… ' + sec + ' с';
-    if (sec >= 20) $('gateHelp').textContent = 'Долго? Выйдите на улицу или к окну и проверьте, что «Местоположение» включено в шторке телефона.';
+    $('gpsCardText').textContent = 'Ищем спутники… ' + sec + ' с';
+    if (sec >= 20) {
+      $('gpsCardHelp').textContent = 'Долго? Выйдите на улицу или к окну и проверьте, что «Местоположение» включено в шторке телефона.';
+      $('gpsCardBtn').textContent = 'Попробовать снова';
+      $('gpsCardBtn').classList.remove('hidden');
+    }
   }
 
   function onPos(p) {
@@ -370,7 +395,7 @@
     gpsProblem = null;
     if (!gpsGranted) {
       gpsGranted = true;
-      $('gpsGate').classList.add('hidden');
+      $('gpsCard').classList.add('hidden');
       toast('GPS подключён');
     }
     fix = f;
@@ -722,7 +747,7 @@
     if (!settings.voice) return;
     if (Tts) {
       nativeSpeaking++;
-      Tts.speak({ text: text, lang: 'ru-RU', rate: 1.0, queueStrategy: interrupt ? 0 : 1 })
+      call(function () { return Tts.speak({ text: text, lang: 'ru-RU', rate: 1.0, queueStrategy: interrupt ? 0 : 1 }); })
         .catch(function () {})
         .then(function () { nativeSpeaking = Math.max(0, nativeSpeaking - 1); });
       return;
@@ -739,7 +764,7 @@
     say(p.title + '. ' + p.story.join(' ') + (p.quiz && ride.quiz[p.id] == null ? ' Вопрос викторины: ' + p.quiz.q : ''), true);
   }
   function stopSpeech() {
-    if (Tts) { nativeSpeaking = 0; Tts.stop().catch(function () {}); return; }
+    if (Tts) { nativeSpeaking = 0; call(function () { return Tts.stop(); }).catch(function () {}); return; }
     if ('speechSynthesis' in window) speechSynthesis.cancel();
   }
   function isSpeaking() {
@@ -961,7 +986,7 @@
   }
 
   function bind() {
-    $('gateBtn').addEventListener('click', gateButton);
+    $('gpsCardBtn').addEventListener('click', gpsCardButton);
     $('btnStart').addEventListener('click', start);
     $('btnPause').addEventListener('click', function () { pause(false); });
     $('btnResume').addEventListener('click', function () { resume(false); });
@@ -999,7 +1024,7 @@
     AppPlugin.addListener('backButton', function () {
       if (!$('poiModal').classList.contains('hidden')) { closePoi(); return; }
       if (!isTabActive('ride')) { showTab('ride'); return; }
-      AppPlugin.minimizeApp().catch(function () {});
+      call(function () { return AppPlugin.minimizeApp(); }).catch(function () {});
     });
     // Вернулись из настроек с выданным разрешением — подключаем GPS снова
     AppPlugin.addListener('resume', function () {
@@ -1023,15 +1048,8 @@
     if (ride.track[ride.track.length - 1].length) ride.track.push([]);
   }
 
-  // Если разрешение уже выдано — подключаемся сразу, иначе ждём нажатия кнопки
-  if (NATIVE) {
-    $('gateHelp').textContent = 'Во время поездки телефон можно блокировать: запись и подсказки продолжатся.';
-  } else if (navigator.permissions && navigator.permissions.query) {
-    navigator.permissions.query({ name: 'geolocation' }).then(function (r) {
-      if (r.state === 'granted') startGps();
-      else if (r.state === 'denied') reportGps('denied');
-    }).catch(function () {});
-  }
+  // GPS подключаем сразу при открытии — без отдельного экрана
+  startGps();
 
   if (!NATIVE && 'serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.register('sw.js').catch(function () {});

@@ -183,14 +183,20 @@ main {
 .tabs button span { font-size: 1.3rem; }
 .tabs button.active { color: var(--accent); }
 
-.gate, .modal {
+.gps-card {
+  background: var(--card); border: 2px solid var(--pause); border-radius: 14px;
+  padding: 10px 14px; margin-bottom: 10px; box-shadow: var(--shadow);
+}
+.gps-card.err { border-color: var(--stop); }
+.gps-card-head { display: flex; align-items: center; gap: 8px; }
+.gps-card-icon { font-size: 1.5rem; }
+.gps-card p { margin: 6px 0 0; }
+.gps-card .btn { width: 100%; margin-top: 8px; }
+
+.modal {
   position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center;
   background: rgba(0, 0, 0, .6); padding: 16px;
 }
-.gate { background: var(--bg); }
-.gate-box { max-width: 420px; text-align: center; }
-.gate-icon { font-size: 4rem; }
-.gate-box .btn { width: 100%; margin: 12px 0; }
 .modal-box {
   background: var(--card); color: var(--text); border-radius: 18px; width: 100%; max-width: 520px;
   max-height: 88vh; overflow-y: auto; padding: 16px; box-shadow: var(--shadow);

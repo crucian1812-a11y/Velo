@@ -16,17 +16,6 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <!-- Обязательное включение GPS -->
-  <div id="gpsGate" class="gate">
-    <div class="gate-box">
-      <div class="gate-icon">🛰️</div>
-      <h1>Нужен GPS</h1>
-      <p id="gateText">Трекер работает только с геолокацией: по ней считаются скорость, дистанция, положение на маршруте и запускаются экскурсии.</p>
-      <button id="gateBtn" class="btn btn-go big">Включить GPS</button>
-      <p id="gateHelp" class="muted small"></p>
-    </div>
-  </div>
-
   <header class="topbar">
     <div class="brand">🚲 <b>ВЕЛО1</b> <span class="muted">Конаково → Яхрома</span></div>
     <div id="gpsChip" class="chip chip-bad" title="Точность GPS">GPS —</div>
@@ -37,6 +26,13 @@
   <main>
     <!-- ТРЕКЕР -->
     <section id="tab-ride" class="tab active">
+      <!-- Состояние GPS: видно, пока нет сигнала; запись без GPS не начинается -->
+      <div id="gpsCard" class="gps-card">
+        <div class="gps-card-head"><span class="gps-card-icon">🛰️</span><b id="gpsCardText">Подключаем GPS…</b></div>
+        <p id="gpsCardHelp" class="muted small"></p>
+        <button id="gpsCardBtn" class="btn hidden">Попробовать снова</button>
+      </div>
+
       <div class="status-line">
         <span id="statusText" class="status">Готов к старту</span>
         <span id="clockNow" class="muted"></span>
