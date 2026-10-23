@@ -1,40 +1,26 @@
 name: GitHub Pages
 
+# Сайт https://crucian1812-a11y.github.io/Velo/ публикуется из ветки gh-pages.
+# При каждом изменении main ветка gh-pages обновляется до того же состояния.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  sync:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/configure-pages@v5
         with:
-          enablement: true
+          fetch-depth: 0
 
-      - name: Сборка сайта (только веб-приложение)
-        run: |
-          mkdir _site
-          cp -r index.html manifest.webmanifest icon.svg sw.js .nojekyll css js _site/
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Обновить gh-pages из main
+        run: git push --force origin HEAD:refs/heads/gh-pages
