@@ -13,7 +13,7 @@
 
 - **GitHub Pages** (после включения, см. ниже): `https://crucian1812-a11y.github.io/Velo/`
 - **Сразу, без настройки** (через raw.githack, всегда последняя версия ветки):
-  `https://raw.githack.com/crucian1812-a11y/Velo/<коммит>/index.html`
+  https://raw.githack.com/crucian1812-a11y/Velo/claude/lucid-einstein-8u3zyh/index.html
 
 Добавьте страницу на главный экран («Добавить на главный экран» / «На экран "Домой"»):
 так приложение откроется на весь экран, как обычное, и будет работать без сети
