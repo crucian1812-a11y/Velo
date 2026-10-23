@@ -486,8 +486,9 @@
       if (n % 5 === 0) {
         var prev = n >= 5 ? ride.splits[n - 6] : null;
         var ms = ride.movingMs - (prev ? prev.movingMs : 0);
-        say(n + ' километров. Средняя скорость ' + Math.round(kmh(ride.dist / (ride.movingMs / 1000 || 1))) +
-          ' километров в час. Последние пять километров за ' + Math.round(ms / 60000) + ' минут.');
+        var avgKmh = Math.round(kmh(ride.dist / (ride.movingMs / 1000 || 1))), lastMin = Math.round(ms / 60000);
+        say(n + ' километров. Средняя скорость ' + avgKmh + ' километров в час. Последние пять километров за ' + lastMin + ' минут.',
+          false, ['km-' + n, 'avg-' + avgKmh, 'last5-' + lastMin]);
       }
     }
     persist();
@@ -518,7 +519,7 @@
       setGpsChip(null);
       showBanner(NATIVE ? 'Нет сигнала GPS. Проверьте, что геолокация включена.' :
         'Нет сигнала GPS. Держите экран включённым и проверьте геолокацию.', true);
-      if (ride.status === 'riding') say('Пропал сигнал GPS');
+      if (ride.status === 'riding') say('Пропал сигнал GPS', false, ['gps-lost']);
     } else if (!lost && lostShown) {
       lostShown = false;
       hideBanner();
@@ -539,7 +540,7 @@
     record(fix, 0);
     requestWakeLock();
     syncGpsMode();
-    say('Поехали! Хорошей дороги.');
+    say('Поехали! Хорошей дороги.', false, ['start']);
     persist(true);
     render();
   }
@@ -549,7 +550,7 @@
     ride.status = 'paused';
     ride.autoPaused = !!auto;
     toast(auto ? 'Автопауза: вы остановились' : 'Пауза');
-    if (!auto) say('Пауза');
+    if (!auto) say('Пауза', false, ['pause']);
     persist(true);
     render();
   }
@@ -572,7 +573,7 @@
     ride.finishedAt = Date.now();
     releaseWakeLock();
     syncGpsMode();
-    say('Поездка завершена. Дистанция ' + fmtKm(ride.dist, 1).replace('.', ',') + ' километра.');
+    say('Поездка завершена. Дистанция ' + fmtKm(ride.dist, 1).replace('.', ',') + ' километра.', false, ['finish']);
     persist(true);
     render();
     showTab('stats');
@@ -655,7 +656,8 @@
         persist(true);
         renderQuiz(p);
         renderGuide();
-        if (settings.voice) say((k === p.quiz.answer ? 'Верно! ' : 'Не совсем. ') + p.quiz.explain);
+        if (settings.voice) say((k === p.quiz.answer ? 'Верно! ' : 'Не совсем. ') + p.quiz.explain, true,
+          ['quiz-' + p.id + (k === p.quiz.answer ? '-right' : '-wrong')]);
       });
     });
   }
@@ -711,9 +713,9 @@
     var off = pos.off > OFF_ROUTE_M + Math.min(fix.acc, 50);
     if (off && ride.status === 'riding') {
       var tgt = ROUTE[pos.idx];
-      var dir = bearingName(fix.lat, fix.lon, tgt[0], tgt[1]);
+      var di = bearingIndex(fix.lat, fix.lon, tgt[0], tgt[1]), dir = DIRECTIONS[di];
       showBanner('⚠️ Вы в ' + Math.round(pos.off) + ' м от маршрута. Трасса — на ' + dir + '.', false);
-      if (!offShown) { say('Внимание, вы сошли с маршрута. Трасса на ' + dir + '.'); if (navigator.vibrate) navigator.vibrate(500); }
+      if (!offShown) { say('Внимание, вы сошли с маршрута. Трасса на ' + dir + '.', false, ['off-' + di]); if (navigator.vibrate) navigator.vibrate(500); }
       offShown = true;
     } else if (offShown) {
       offShown = false;
@@ -722,11 +724,13 @@
     }
   }
 
-  function bearingName(aLat, aLon, bLat, bLon) {
+  // Порядок совпадает с записями off-0…off-7 (tools/make_audio.py)
+  var DIRECTIONS = ['севере', 'северо-востоке', 'востоке', 'юго-востоке', 'юге', 'юго-западе', 'западе', 'северо-западе'];
+  function bearingIndex(aLat, aLon, bLat, bLon) {
     var y = Math.sin(rad(bLon - aLon)) * Math.cos(rad(bLat));
     var x = Math.cos(rad(aLat)) * Math.sin(rad(bLat)) - Math.sin(rad(aLat)) * Math.cos(rad(bLat)) * Math.cos(rad(bLon - aLon));
     var b = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
-    return ['севере', 'северо-востоке', 'востоке', 'юго-востоке', 'юге', 'юго-западе', 'западе', 'северо-западе'][Math.round(b / 45) % 8];
+    return Math.round(b / 45) % 8;
   }
 
   // ---------- Голос ----------
@@ -740,11 +744,73 @@
     pickVoice();
     speechSynthesis.onvoiceschanged = pickVoice;
   }
-  // В приложении — системный синтезатор речи Android (работает и с погашенным экраном),
-  // в браузере — Web Speech API (голос из настроек телефона)
-  var nativeSpeaking = 0;
-  function say(text, interrupt) {
+  // Основной голос — записи Silero (audio/<голос>/*.mp3, см. tools/make_audio.py).
+  // Если записи нет или она не сыграла — читает системный синтезатор: в приложении
+  // голос Android (работает и с погашенным экраном), в браузере — Web Speech API.
+  var VOICE = window.VOICE || null;
+  var clipSet = {};
+  if (VOICE) VOICE.keys.forEach(function (k) { clipSet[k] = true; });
+  var player = new Audio();
+  player.preload = 'auto';
+  var clipQueue = [];        // [{keys, text}]
+  var clipCur = null;        // что играет сейчас: {keys, text, i}
+
+  function hasClips(keys) {
+    return !!(VOICE && keys && keys.length && keys.every(function (k) { return clipSet[k]; }));
+  }
+  function clipUrl(k) { return VOICE.dir + k + '.mp3?v=' + VOICE.v; }
+
+  function playNextClip() {
+    if (!clipCur) {
+      clipCur = clipQueue.shift() || null;
+      if (!clipCur) return;
+      clipCur.i = 0;
+    }
+    var item = clipCur;
+    if (item.i >= item.keys.length) { clipCur = null; playNextClip(); return; }
+    player.src = clipUrl(item.keys[item.i++]);
+    player.muted = false;
+    var started = false;
+    var guard = setTimeout(function () { if (!started && clipCur === item) clipFailed(item); }, 8000);
+    player.onplaying = function () { started = true; clearTimeout(guard); };
+    player.onended = function () { clearTimeout(guard); if (clipCur === item) playNextClip(); };
+    player.onerror = function () { clearTimeout(guard); if (clipCur === item) clipFailed(item); };
+    var pr = player.play();
+    if (pr && pr.catch) pr.catch(function () { clearTimeout(guard); if (clipCur === item) clipFailed(item); });
+  }
+  function clipFailed(item) {
+    player.pause();
+    clipCur = null;
+    ttsSay(item.text, false);
+    playNextClip();
+  }
+
+  // На iPhone звук разрешён только после касания: «разблокируем» плеер первым нажатием
+  function unlockPlayer() {
+    document.removeEventListener('click', unlockPlayer, true);
+    if (!VOICE || clipCur || clipQueue.length) return;
+    player.src = clipUrl('pause');
+    player.muted = true;
+    var pr = player.play();
+    // Если за это время запустилась настоящая фраза — её не трогаем
+    var done = function () { if (!clipCur) { player.pause(); player.muted = false; } };
+    if (pr && pr.then) pr.then(done, done); else done();
+  }
+  document.addEventListener('click', unlockPlayer, true);
+
+  function say(text, interrupt, keys) {
     if (!settings.voice) return;
+    if (interrupt) stopSpeech();
+    if (hasClips(keys)) {
+      clipQueue.push({ keys: keys, text: text });
+      if (!clipCur) playNextClip();
+      return;
+    }
+    ttsSay(text, interrupt);
+  }
+
+  var nativeSpeaking = 0;
+  function ttsSay(text, interrupt) {
     if (Tts) {
       nativeSpeaking++;
       call(function () { return Tts.speak({ text: text, lang: 'ru-RU', rate: 1.0, queueStrategy: interrupt ? 0 : 1 }); })
@@ -761,15 +827,41 @@
     speechSynthesis.speak(u);
   }
   function speakPoi(p) {
-    say(p.title + '. ' + p.story.join(' ') + (p.quiz && ride.quiz[p.id] == null ? ' Вопрос викторины: ' + p.quiz.q : ''), true);
+    say(p.title + '. ' + p.story.join(' ') + (p.quiz ? ' Вопрос викторины: ' + p.quiz.q : ''), true, ['poi-' + p.id]);
   }
   function stopSpeech() {
-    if (Tts) { nativeSpeaking = 0; call(function () { return Tts.stop(); }).catch(function () {}); return; }
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    clipQueue = [];
+    clipCur = null;
+    player.pause();
+    if (Tts) { nativeSpeaking = 0; call(function () { return Tts.stop(); }).catch(function () {}); }
+    else if ('speechSynthesis' in window) speechSynthesis.cancel();
   }
   function isSpeaking() {
+    if (clipCur || clipQueue.length) return true;
     if (Tts) return nativeSpeaking > 0;
     return 'speechSynthesis' in window && speechSynthesis.speaking;
+  }
+
+  // Браузер: скачать все записи заранее, чтобы голос работал без интернета
+  function cacheVoice() {
+    if (!VOICE) return;
+    var keys = VOICE.keys.slice(), done = 0, failed = 0;
+    var btn = $('btnVoiceCache');
+    btn.disabled = true;
+    function next() {
+      var k = keys.shift();
+      if (!k) {
+        btn.disabled = false;
+        btn.textContent = failed ? '📥 Сохранить озвучку (не всё скачалось — повторите)' : '✅ Озвучка сохранена в телефоне';
+        return;
+      }
+      fetch(clipUrl(k)).then(function (r) { if (!r.ok) failed++; }, function () { failed++; }).then(function () {
+        done++;
+        btn.textContent = '📥 Сохраняем озвучку… ' + Math.round(done / VOICE.keys.length * 100) + '%';
+        next();
+      });
+    }
+    next();
   }
 
   // ---------- Блокировка сна экрана ----------
@@ -998,6 +1090,8 @@
     $('btnReset').addEventListener('click', resetRide);
     $('btnGpx').addEventListener('click', exportGpx);
     $('btnShare').addEventListener('click', shareLocation);
+    $('btnVoiceCache').addEventListener('click', cacheVoice);
+    if (NATIVE || !VOICE) $('btnVoiceCache').classList.add('hidden');   // в приложении записи уже внутри
     $('btnFollow').addEventListener('click', function () { setFollow(!follow); });
     $('btnFit').addEventListener('click', function () { setFollow(false); if (map) map.fitBounds(routeLine.getBounds(), { padding: [20, 20] }); });
     $('pmClose').addEventListener('click', closePoi);

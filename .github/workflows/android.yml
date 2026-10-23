@@ -7,6 +7,7 @@ on:
       - 'css/**'
       - 'js/**'
       - 'android-app/**'
+      - 'audio/**'
       - '.github/workflows/android.yml'
   workflow_dispatch:
 

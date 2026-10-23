@@ -1,0 +1,5 @@
+# torch лучше ставить CPU-сборку, она в разы легче:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0
+numpy
+num2words>=0.5.13
