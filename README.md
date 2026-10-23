@@ -39,9 +39,9 @@ APK собирается автоматически (GitHub Actions) при ка
 (браузеры останавливают GPS, когда экран гаснет).
 Откройте ссылку в Chrome (Android) или Safari (iPhone):
 
-- **GitHub Pages** (после включения, см. ниже): `https://crucian1812-a11y.github.io/Velo/`
-- **Сразу, без настройки** (через raw.githack, всегда последняя версия ветки):
-  https://raw.githack.com/crucian1812-a11y/Velo/claude/lucid-einstein-8u3zyh/index.html
+- **GitHub Pages:** https://crucian1812-a11y.github.io/Velo/
+- **Запасная ссылка** (через raw.githack):
+  https://raw.githack.com/crucian1812-a11y/Velo/main/index.html
   (при первом открытии raw.githack покажет предупреждение — нажмите **Open the page**)
 
 Добавьте страницу на главный экран («Добавить на главный экран» / «На экран "Домой"»):
