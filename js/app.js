@@ -145,7 +145,7 @@
   var prevFixT = 0;          // время предыдущей точки (для времени в движении)
   var altBuf = [];           // высоты за последнюю минуту [t, alt]
   var watchId = null;
-  var bgWatcherId = null, bgMode = null, gpsDenied = false;
+  var bgWatcherId = null, bgMode = null;
   var gpsGranted = false;
 
   // ---------- Карта ----------
@@ -220,50 +220,68 @@
   }
 
   // ---------- GPS ----------
+  // Источники координат: геолокация браузера/WebView (пока экран включён) и, в приложении,
+  // фоновая служба Android (работает и с погашенным экраном). Точки от обоих идут в onPos.
+  var gpsProblem = null;     // 'denied' | 'off' | 'nosignal' | 'unsupported' | 'insecure'
+  var gpsAskedAt = 0;        // когда начали поиск (0 — ещё не начинали)
+  var gpsRetryTimer = null;
+  function noop() {}
+
   function startGps() {
-    if (NATIVE) { startNativeGps(isRideActive()); return; }
-    if (!('geolocation' in navigator)) {
-      gateMessage('В этом браузере нет геолокации. Откройте страницу в Chrome или Safari.', true);
-      return;
-    }
-    if (!window.isSecureContext) {
-      gateMessage('GPS работает только по защищённой ссылке (https://). Откройте приложение по ссылке из GitHub.', true);
-      return;
-    }
-    $('gateText').textContent = 'Ищем спутники… Выйдите на открытое место.';
+    gpsAskedAt = Date.now();
+    gpsProblem = null;
+    if (!gpsGranted) showGate('Ищем спутники… Выйдите на открытое место.', 'Включить GPS');
+    if (NATIVE) startNativeGps(isRideActive(), true);
+    else startWebGps();
+  }
+
+  function startWebGps() {
+    if (!('geolocation' in navigator)) { if (!NATIVE) reportGps('unsupported'); return; }
+    if (!window.isSecureContext) { if (!NATIVE) reportGps('insecure'); return; }
     if (watchId != null) navigator.geolocation.clearWatch(watchId);
-    watchId = navigator.geolocation.watchPosition(onPos, onGpsError, {
-      enableHighAccuracy: true, maximumAge: 0, timeout: 30000
-    });
+    watchId = navigator.geolocation.watchPosition(onPos, function (err) {
+      if (NATIVE && err.code !== 1) return;   // в приложении о выключенном GPS сообщает фоновая служба
+      reportGps(err.code === 1 ? 'denied' : err.code === 2 ? 'off' : 'nosignal');
+    }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
   }
 
   function isRideActive() { return ride.status === 'riding' || ride.status === 'paused'; }
 
-  // В приложении GPS идёт через фоновую службу: пока идёт поездка, Android показывает
-  // уведомление и продолжает присылать координаты при погашенном экране.
-  function startNativeGps(background) {
-    if (gpsDenied) { gpsDenied = false; BgGeo.openSettings().catch(function () {}); return; }
-    if (bgMode === background && bgWatcherId != null) return;
-    if (!gpsGranted) $('gateText').textContent = 'Ищем спутники… Выйдите на открытое место.';
+  // В приложении сначала спрашиваем разрешение, потом запускаем службу геолокации. Пока идёт
+  // поездка, Android показывает уведомление и присылает координаты при погашенном экране.
+  function startNativeGps(background, force) {
+    if (!force && bgMode === background && bgWatcherId != null) return;
+    var req;
+    try { req = BgGeo.requestPermissions(); } catch (e) { req = null; }
+    Promise.resolve(req).catch(function () { return null; }).then(function (st) {
+      if (st && st.location && st.location !== 'granted') { reportGps('denied'); return; }
+      if (st && watchId == null) startWebGps();   // запасной источник, если служба не отвечает
+      addNativeWatcher(background, !st);           // не смогли спросить заранее — пусть спросит служба
+    });
+  }
+
+  function addNativeWatcher(background, askPerm) {
     var old = bgWatcherId;
     bgWatcherId = null;
     bgMode = background;
-    if (old != null) BgGeo.removeWatcher({ id: old }).catch(function () {});
-    var opts = { requestPermissions: true, stale: false, distanceFilter: 0 };
+    if (old != null) BgGeo.removeWatcher({ id: old }).catch(noop);
+    var opts = { requestPermissions: !!askPerm, stale: false, distanceFilter: 0 };
     if (background) {
       opts.backgroundTitle = 'ВЕЛО1: идёт запись поездки';
       opts.backgroundMessage = 'GPS и подсказки работают при выключенном экране';
-      if (Notif) Notif.requestPermissions().catch(function () {});
+      if (Notif) Notif.requestPermissions().catch(noop);
     }
+    var myId = null, dead = false;
     BgGeo.addWatcher(opts, function (loc, err) {
       if (err) {
-        if (err.code === 'NOT_AUTHORIZED') {
-          gpsDenied = true;
-          if (bgWatcherId != null) BgGeo.removeWatcher({ id: bgWatcherId }).catch(function () {});
-          bgWatcherId = null;
-          onGpsError({ code: 1 });
-        }
-        else onGpsError({ code: 2 });
+        // Ошибочный наблюдатель больше не нужен — снимаем его, чтобы повтор запустил новый
+        dead = true;
+        if (myId != null) BgGeo.removeWatcher({ id: myId }).catch(noop);
+        if (bgWatcherId === myId) bgWatcherId = null;
+        var msg = String((err && err.message) || err);
+        if (/disabled/i.test(msg)) reportGps('off');
+        else if ((err && err.code === 'NOT_AUTHORIZED') || /denied|permission/i.test(msg)) reportGps('denied');
+        else setTimeout(function () { if (bgWatcherId == null) addNativeWatcher(bgMode, askPerm); }, 1500); // служба ещё не запустилась
         return;
       }
       if (!loc) return;
@@ -271,35 +289,73 @@
         coords: { latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy, altitude: loc.altitude, speed: loc.speed },
         timestamp: loc.time || Date.now()
       });
-    }).then(function (id) { bgWatcherId = id; }).catch(function () { onGpsError({ code: 2 }); });
+    }).then(function (id) {
+      myId = id;
+      if (dead || bgMode !== background) BgGeo.removeWatcher({ id: id }).catch(noop);
+      else bgWatcherId = id;
+    }).catch(function () { reportGps('nosignal'); });
   }
-  function syncGpsMode() { if (NATIVE && gpsGranted) startNativeGps(isRideActive()); }
+  function syncGpsMode() { if (NATIVE && gpsGranted) startNativeGps(isRideActive(), false); }
 
-  function gateMessage(text, isError) {
+  function showGate(text, btn, help) {
     $('gpsGate').classList.remove('hidden');
     $('gateText').textContent = text;
-    $('gateBtn').textContent = isError ? 'Попробовать снова' : 'Включить GPS';
+    $('gateBtn').textContent = btn;
+    if (help != null) $('gateHelp').innerHTML = help;
   }
 
-  function onGpsError(err) {
-    if (err.code === 1) {
-      gpsGranted = false;
-      gateMessage('Доступ к геолокации запрещён. Без GPS трекер не работает.', true);
-      if (NATIVE) {
-        $('gateBtn').textContent = 'Открыть настройки';
-        $('gateHelp').innerHTML = 'Настройки → Разрешения → Местоположение → «Разрешить только во время использования приложения». ' +
-          'И проверьте, что геолокация телефона включена.';
-        return;
-      }
-      $('gateHelp').innerHTML = 'Android/Chrome: значок 🔒 слева от адреса → Разрешения → Геоданные → Разрешить.<br>' +
-        'iPhone: Настройки → Конфиденциальность → Службы геолокации → Safari → «При использовании».<br>' +
-        'И проверьте, что геолокация телефона включена.';
-    } else if (!gpsGranted) {
-      gateMessage(err.code === 3 ? 'Сигнал GPS не найден. Выйдите на открытое место и проверьте, что геолокация включена.' :
-        'GPS недоступен. Включите геолокацию в настройках телефона.', true);
-    } else {
-      setGpsChip(null);
+  function gateButton() {
+    if (gpsProblem === 'denied' && NATIVE) {
+      // Сначала спрашиваем ещё раз; если Android больше не показывает запрос — открываем настройки
+      var req;
+      try { req = BgGeo.requestPermissions(); } catch (e) { req = Promise.reject(e); }
+      req.then(function (st) {
+        if (st && st.location === 'granted') startGps();
+        else BgGeo.openSettings().catch(noop);
+      }).catch(function () { BgGeo.openSettings().catch(noop); });
+      return;
     }
+    startGps();
+  }
+
+  function reportGps(kind) {
+    if (fix && Date.now() - fix.t < 15000) return;   // другой источник исправно присылает точки
+    gpsProblem = kind;
+    if (gpsGranted) { setGpsChip(null); return; }    // во время работы — только индикатор
+    var t = {
+      denied: NATIVE ? 'Нет разрешения на точное местоположение.' : 'Доступ к геолокации для этого сайта запрещён.',
+      off: 'Геолокация на телефоне выключена.',
+      nosignal: 'Сигнал GPS пока не найден. Выйдите на открытое место — поиск продолжается.',
+      unsupported: 'В этом браузере нет геолокации. Откройте страницу в Chrome или Safari.',
+      insecure: 'GPS работает только по защищённой ссылке (https://). Откройте приложение по ссылке из GitHub.'
+    }[kind];
+    var help = {
+      denied: NATIVE ?
+        'Нажмите «Открыть настройки» → Разрешения → Местоположение → «Разрешить только во время использования» и включите «Точное местоположение». Затем вернитесь в приложение.' :
+        'Android/Chrome: значок 🔒 слева от адреса → Разрешения → Геоданные → Разрешить, затем «Попробовать снова».<br>' +
+        'iPhone: Настройки → Конфиденциальность → Службы геолокации → Safari → «При использовании».',
+      off: 'Опустите шторку и включите «Местоположение» (GPS). Приложение подхватит сигнал само, нажимать ничего не нужно.',
+      nosignal: 'В помещении спутники часто не видны. Проверьте, что «Местоположение» включено.'
+    }[kind] || '';
+    showGate(t, kind === 'denied' && NATIVE ? 'Открыть настройки' : 'Попробовать снова', help);
+    scheduleGpsRetry();
+  }
+
+  // Пока GPS выключен, каждые 4 секунды пробуем снова — как только геолокацию включат, поиск пойдёт
+  function scheduleGpsRetry() {
+    clearTimeout(gpsRetryTimer);
+    if (gpsProblem !== 'off') return;
+    gpsRetryTimer = setTimeout(function () {
+      if (!gpsGranted && gpsProblem === 'off') startGps();
+    }, 4000);
+  }
+
+  // Подсказка с таймером, пока ищем первую точку
+  function updateGateWait(now) {
+    if (gpsGranted || !gpsAskedAt || gpsProblem) return;
+    var sec = Math.round((now - gpsAskedAt) / 1000);
+    $('gateText').textContent = 'Ищем спутники… ' + sec + ' с';
+    if (sec >= 20) $('gateHelp').textContent = 'Долго? Выйдите на улицу или к окну и проверьте, что «Местоположение» включено в шторке телефона.';
   }
 
   function onPos(p) {
@@ -310,6 +366,8 @@
       spd: (c.speed != null && isFinite(c.speed) && c.speed >= 0) ? c.speed : null,
       t: p.timestamp || Date.now()
     };
+    if (fix && f.t <= fix.t) return;                 // та же или более старая точка из второго источника
+    gpsProblem = null;
     if (!gpsGranted) {
       gpsGranted = true;
       $('gpsGate').classList.add('hidden');
@@ -415,6 +473,7 @@
     var now = Date.now();
     if (ride.status === 'riding') checkAutoPause(now);
     checkGpsLost(now);
+    updateGateWait(now);
     render();
   }, 1000);
 
@@ -702,6 +761,7 @@
     if (document.visibilityState === 'visible') {
       if (ride.status === 'riding' || ride.status === 'paused') requestWakeLock();
       if (map) setTimeout(function () { map.invalidateSize(); }, 100);
+      if (!NATIVE && !gpsGranted && gpsAskedAt) startGps();   // вернулись из настроек браузера
     } else {
       persist(true);
     }
@@ -901,7 +961,7 @@
   }
 
   function bind() {
-    $('gateBtn').addEventListener('click', startGps);
+    $('gateBtn').addEventListener('click', gateButton);
     $('btnStart').addEventListener('click', start);
     $('btnPause').addEventListener('click', function () { pause(false); });
     $('btnResume').addEventListener('click', function () { resume(false); });
@@ -943,7 +1003,7 @@
     });
     // Вернулись из настроек с выданным разрешением — подключаем GPS снова
     AppPlugin.addListener('resume', function () {
-      if (!gpsGranted && gpsDenied) { gpsDenied = false; startNativeGps(isRideActive()); }
+      if (!gpsGranted && gpsAskedAt) startGps();
     });
   }
 
@@ -969,7 +1029,7 @@
   } else if (navigator.permissions && navigator.permissions.query) {
     navigator.permissions.query({ name: 'geolocation' }).then(function (r) {
       if (r.state === 'granted') startGps();
-      else if (r.state === 'denied') onGpsError({ code: 1 });
+      else if (r.state === 'denied') reportGps('denied');
     }).catch(function () {});
   }
 
