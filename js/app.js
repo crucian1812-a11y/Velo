@@ -143,6 +143,7 @@
   var pos = null;            // проекция на маршрут
   var lastMoveAt = 0;
   var prevFixT = 0;          // время предыдущей точки (для времени в движении)
+  var altBuf = [];           // высоты за последнюю минуту [t, alt]
   var watchId = null;
   var bgWatcherId = null, bgMode = null, gpsDenied = false;
   var gpsGranted = false;
@@ -381,9 +382,14 @@
     seg.push([f.lat, f.lon, f.t, f.alt]);
     appendTrackPoint(seg[seg.length - 1]);
 
-    // Высота: сглаживание и гистерезис, чтобы шум GPS не давал «набора»
-    if (f.alt != null) {
-      ride.altSmooth = ride.altSmooth == null ? f.alt : ride.altSmooth * 0.8 + f.alt * 0.2;
+    // Высота: GPS в телефоне ошибается по высоте на 5–15 м, поэтому берём среднее за минуту
+    // и учитываем только перепады больше 4 м — иначе на равнине «набирается» сотни метров шума
+    if (f.alt != null && f.acc <= 25) {
+      altBuf.push([f.t, f.alt]);
+      while (altBuf.length && f.t - altBuf[0][0] > 60000) altBuf.shift();
+    }
+    if (altBuf.length >= 10) {
+      ride.altSmooth = altBuf.reduce(function (sum, x) { return sum + x[1]; }, 0) / altBuf.length;
       if (ride.altRef == null) ride.altRef = ride.altSmooth;
       var diff = ride.altSmooth - ride.altRef;
       if (diff > 4) { ride.gain += diff; ride.altRef = ride.altSmooth; }
