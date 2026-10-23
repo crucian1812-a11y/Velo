@@ -1,0 +1,15 @@
+{
+  "name": "Велотрекер ВЕЛО1: Конаково — Яхрома",
+  "short_name": "ВЕЛО1",
+  "description": "GPS-трекер и аудиогид веломаршрута Конаково ГРЭС — Яхрома",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f766e",
+  "theme_color": "#0f766e",
+  "lang": "ru",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
