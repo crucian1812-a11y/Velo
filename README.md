@@ -27,7 +27,7 @@
 Кнопка «Назад» в приложении не закрывает его, а сворачивает — запись не прервётся.
 Чтобы закончить, нажмите «Финиш»: уведомление исчезнет.
 
-Озвучка — записанный голос Silero (Ксения, `xenia`): рассказы экскурсии, ответы викторины,
+Озвучка — записанный мужской голос Silero (`eugene`): рассказы экскурсии, ответы викторины,
 сводки каждые 5 км и подсказки. Если запись почему-то не сыграла, тот же текст прочитает
 системный синтезатор речи.
 
@@ -97,7 +97,7 @@ Settings → Pages → *Build and deployment* → Source: **Deploy from a branch
 | `js/vendor/`, `css/vendor/` | Leaflet 1.9.4 (карта), встроен для работы без сети |
 | `android-app/` | Android-обёртка (Capacitor 8): фоновый GPS, системная озвучка |
 | `.github/workflows/android.yml` | автосборка APK и публикация в релиз `android-latest` |
-| `audio/xenia/`, `js/voice.js` | озвучка голосом Silero и её список |
+| `audio/eugene/`, `js/voice.js` | озвучка голосом Silero и её список |
 | `tools/make_audio.py`, `tools/silero-voice/` | генератор озвучки |
 
 ### Перезаписать озвучку
@@ -107,8 +107,8 @@ Settings → Pages → *Build and deployment* → Source: **Deploy from a branch
 ```
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install numpy num2words
-python tools/make_audio.py                  # голос xenia
-python tools/make_audio.py --speaker baya   # или baya, kseniya, aidar, eugene
+python tools/make_audio.py                  # голос eugene
+python tools/make_audio.py --speaker xenia  # или baya, kseniya, aidar
 python tools/make_audio.py --dry-run        # только посмотреть тексты для синтеза
 ```
 

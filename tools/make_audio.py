@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Озвучка приложения голосом Silero: рассказы экскурсии, ответы викторины и подсказки.
 
-    python tools/make_audio.py                    # голос xenia → audio/xenia/, js/voice.js
-    python tools/make_audio.py --speaker baya     # другой голос
+    python tools/make_audio.py                    # голос eugene → audio/eugene/, js/voice.js
+    python tools/make_audio.py --speaker xenia    # другой голос
     python tools/make_audio.py --dry-run          # только тексты для проверки → audio/<голос>/texts.txt
 
 Нужны: node (чтобы прочитать js/pois.js), ffmpeg, Python-пакеты torch, numpy, num2words
@@ -107,7 +107,7 @@ def phrases(pois: list[dict]) -> dict[str, str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--speaker", default="xenia", help="xenia, baya, kseniya — женские; aidar, eugene — мужские")
+    ap.add_argument("--speaker", default="eugene", help="xenia, baya, kseniya — женские; aidar, eugene — мужские")
     ap.add_argument("--model", default="v5_5_ru")
     ap.add_argument("--bitrate", default="48k")
     ap.add_argument("--tempo", type=float, default=1.0)
